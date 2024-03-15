@@ -1,0 +1,14 @@
+{
+    "name": "groq_lpu",
+    "mem_per_GPU_in_GB": 0.23,
+    "hbm_bandwidth_in_GB_per_sec": 80000,
+    "intra_node_bandwidth_in_GB_per_sec": 45,
+    "intra_node_min_message_latency": 2e-07,
+    "peak_fp16_TFLOPS": 205,
+    "peak_i8_TFLOPS": 820,
+    "peak_i4_TFLOPS": 0,
+    "use_real_comm_bw_estimation" : true,
+    "comm_alpha" : 4,
+    "comm_beta" : -6.4,
+    "inter_node_bandwidth_in_GB_per_sec": 30
+}

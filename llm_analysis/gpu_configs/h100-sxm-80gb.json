@@ -7,5 +7,8 @@
     "peak_fp16_TFLOPS": 989,
     "peak_i8_TFLOPS": 1979,
     "peak_i4_TFLOPS": 3958,
-    "inter_node_bandwidth_in_GB_per_sec": 400
+    "inter_node_bandwidth_in_GB_per_sec": 400,
+    "use_real_comm_bw_estimation" : true,
+    "comm_alpha" : 2,
+    "comm_beta" : 2.4
 }

@@ -21,12 +21,12 @@ from pathlib import Path
 
 import fire
 
-from llm_analysis.constant import (
+from constant import (
     DTYPE_CONFIG_DIR_NAME,
     GPU_CONFIG_DIR_NAME,
     MODEL_CONFIG_DIR_NAME,
 )
-from llm_analysis.logger import logger
+from logger import logger
 
 try:
     from transformers import AutoConfig
@@ -95,6 +95,9 @@ class GPUConfig:
     peak_i8_TFLOPS: float = None  # peak Tensor TFLOPS for INT8
     peak_i4_TFLOPS: float = None  # peak Tensor TFLOPS for INT4
     inter_node_bandwidth_in_GB_per_sec: float = 200  # inter node bandwidth in GB/s, assuming Mellanox 200Gbps HDR Infiniband
+    use_real_comm_bw_estimation: bool = False  # whether to use real communication bandwidth estimation
+    comm_alpha : float = 1 
+    comm_beta : float = 0
 
     def __post_init__(self):
         if self.peak_i8_TFLOPS is None:

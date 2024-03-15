@@ -12,13 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-gpu_name='groq_lpu'
+gpu_name='h100-sxm-80gb'
 dtype_name="w8a16e16"
 output_dir='outputs_infer'
 model_name=./long_llama2.json
 batch_size_per_gpu=3
-tp_size=36
-pp_size=16
+tp_size=1
+pp_size=8
 output_file_suffix="-bs${batch_size_per_gpu}"
 cost_per_gpu_hour=2.21
 seq_len=4096
@@ -43,6 +43,6 @@ fi
 
 python ../../llm_analysis/analysis.py    infer --model_name=${model_name} --gpu_name=${gpu_name} --dtype_name=${dtype_name} -output_dir=${output_dir} --output-file-suffix=${output_file_suffix} \
     --seq_len=${seq_len} --num_tokens_to_generate=${num_tokens_to_generate} --batch_size_per_gpu=${batch_size_per_gpu} \
-    --tp_size=${tp_size} --pp_size=${pp_size} \
+    --tp_size=${tp_size} --pp_size=${pp_size}\
     --cost_per_gpu_hour=${cost_per_gpu_hour} \
     --flops_efficiency=${flops_efficiency} --hbm_memory_efficiency=${hbm_memory_efficiency} --log_level DEBUG

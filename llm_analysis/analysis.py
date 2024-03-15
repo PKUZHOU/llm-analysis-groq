@@ -19,10 +19,11 @@ from enum import Enum
 from functools import total_ordering
 from pprint import pformat
 from typing import Union
+import math
 
 import fire
 
-from llm_analysis.config import (
+from config import (
     DtypeConfig,
     GPUConfig,
     ModelConfig,
@@ -31,9 +32,9 @@ from llm_analysis.config import (
     get_gpu_config_by_name,
     get_model_config_by_name,
 )
-from llm_analysis.constant import *
-from llm_analysis.logger import logger
-from llm_analysis.utils import _latency_to_string, _num_to_string, within_range
+from constant import *
+from logger import logger
+from utils import _latency_to_string, _num_to_string, within_range
 
 
 @total_ordering
@@ -1182,6 +1183,38 @@ class LLMAnalysis:
             self.get_gpu_hbm_bandwidth() * 10**9)
         return activation_memory_latency
 
+    def get_latency_fwd_per_pp_comm(self, batch_size: int, seq_len: int, dtype_bytes: int) -> float:
+
+        elems_per_pp_transfer = batch_size * seq_len * self.model_config.hidden_dim 
+
+        if self.gpu_config.use_real_comm_bw_estimation:
+            comm_size_in_MB = elems_per_pp_transfer * dtype_bytes / (1024**2)
+            util, comm_bw = self.get_real_comm_bw_estimation(self.gpu_config.inter_node_bandwidth_in_GB_per_sec * 10**9, comm_size_in_MB)
+            logger.debug(
+                f'pp_utilization: {round(util*100, 3)}%'
+            )
+
+            latency_per_pp_transfer = elems_per_pp_transfer * dtype_bytes / comm_bw
+        else:
+            latency_per_pp_transfer = (
+                elems_per_pp_transfer * dtype_bytes /
+                (self.gpu_config.inter_node_bandwidth_in_GB_per_sec * 10**9))
+        logger.debug(
+            f'latency_fwd_per_pp_comm: {round(latency_per_pp_transfer*1000, 3)} ms'
+        )
+        return latency_per_pp_transfer
+
+    def get_real_comm_bw_estimation(self, max_bw, comm_size_in_MB):
+        def log10(x):
+            return math.log(x) / math.log(10)
+        alpha = self.gpu_config.comm_alpha
+        beta = self.gpu_config.comm_beta
+        utilization = 1 / (1+math.exp(-alpha*log10(comm_size_in_MB)+beta))
+        logger.debug(
+            f'utilization: {round(utilization*100, 3)}%'
+        )
+        return utilization, max_bw * utilization
+
     def get_latency_fwd_per_tp_comm(self, batch_size: int, seq_len: int,
                                     dtype_bytes: int) -> float:
         """Get the latency of a single allreduce communication across the tensor
@@ -1206,9 +1239,20 @@ class LLMAnalysis:
         elems_per_all_reduce = (2 * batch_size * seq_len *
                                 self.model_config.hidden_dim * (tp_size - 1) /
                                 tp_size)
-        latency_per_all_reduce = (
-            elems_per_all_reduce * dtype_bytes /
-            (self.gpu_config.intra_node_bandwidth_in_GB_per_sec * 10**9))
+        
+        if self.gpu_config.use_real_comm_bw_estimation:
+            comm_size_in_MB = elems_per_all_reduce * dtype_bytes / (1024**2)
+            util, comm_bw = self.get_real_comm_bw_estimation(self.gpu_config.intra_node_bandwidth_in_GB_per_sec * 10**9, comm_size_in_MB)
+            logger.debug(
+                f'tp_utilization: {round(util*100, 3)}%'
+            )
+
+            latency_per_all_reduce = elems_per_all_reduce * dtype_bytes / comm_bw
+
+        else:
+            latency_per_all_reduce = (
+                elems_per_all_reduce * dtype_bytes /
+                (self.gpu_config.intra_node_bandwidth_in_GB_per_sec * 10**9))
 
         return max(
             latency_per_all_reduce,
@@ -1349,8 +1393,9 @@ class LLMAnalysis:
         Returns:
             float: the latency in seconds for the forward pass of the input embedding layer
         """
+        tp_size = self.parallelism_config.tp_size
         memory_latency = (self.model_config.vocab_size *
-                          self.model_config.hidden_dim * dtype_bytes /
+                          self.model_config.hidden_dim * dtype_bytes / tp_size /
                           (self.get_gpu_hbm_bandwidth() * 10**9))
         comm_latency = self.get_latency_fwd_per_tp_comm(
             batch_size, seq_len, dtype_bytes)
@@ -1425,11 +1470,14 @@ class LLMAnalysis:
             dtype_bytes=self.dtype_config.embedding_bits / BITS_PER_BYTE,
         )
 
+        latency_pp_transfer = self.parallelism_config.pp_size * self.get_latency_fwd_per_pp_comm(batch_size, seq_len, self.dtype_config.activation_bits / BITS_PER_BYTE)
+
+
         latency_fwd_output_embedding_loss = (
             self.get_latency_fwd_output_embedding_loss(batch_size, seq_len))
 
         latency_fwd = (latency_fwd_layers + latency_fwd_input_embedding +
-                       latency_fwd_output_embedding_loss)
+                       latency_fwd_output_embedding_loss + latency_pp_transfer)
 
         logger.info("latency_fwd_layers:"
                     f" {round(latency_fwd_layers*1000, 3)} ms"
@@ -1437,11 +1485,13 @@ class LLMAnalysis:
                     f" {num_layers_per_gpu}), latency_fwd_input_embedding:"
                     f" {round(latency_fwd_input_embedding*1000, 3)} ms,"
                     " latency_fwd_output_embedding_loss:"
-                    f" {round(latency_fwd_output_embedding_loss*1000, 3)} ms")
+                    f" {round(latency_fwd_output_embedding_loss*1000, 3)} ms"
+                    )
 
         logger.info(
             f"latency_fwd: {round(latency_fwd*1000, 3)} ms (layers + input_embedding + output_embedding_loss: "
             f"{round(latency_fwd_layers*1000, 3)} + {round(latency_fwd_input_embedding*1000, 3)} + {round(latency_fwd_output_embedding_loss*1000, 3)})"
+            f" {round(latency_pp_transfer*1000, 3)} ms"
         )
 
         latency_fwd_breakdown = {
@@ -1453,6 +1503,8 @@ class LLMAnalysis:
             breakdown_per_layer["layernorm"] * num_layers_per_gpu,
             breakdown_prefix + "latency_fwd_tp_comm":
             breakdown_per_layer["tp_comm"] * num_layers_per_gpu,
+            breakdown_prefix + "latency_fwd_pp_comm":
+            latency_pp_transfer,
             breakdown_prefix + "latency_fwd_sharded_dp_comm":
             breakdown_per_layer["sharded_dp_comm"] * num_layers_per_gpu,
             breakdown_prefix + "latency_fwd_input_embedding":
@@ -1582,7 +1634,8 @@ class LLMAnalysis:
 
         weight_memory_embedding_per_gpu = self.get_memory_embedding(ds_zero)
         weight_memory_layers_per_gpu, weight_memory_attn_per_gpu, weight_memory_mlp_per_gpu, weight_memory_layernorm_per_gpu = [
-            x * self.model_config.num_layers
+            # x * self.model_config.num_layers
+            x * num_layers_per_gpu
             for x in self.get_weight_memory_per_layer(ds_zero,
                                                       return_breakdown=True)
         ]
@@ -1756,6 +1809,7 @@ class LLMAnalysis:
         )
 
         if use_kv_cache:
+            decode_latency_breakdown.update({"decode_latency_fwd_kv_cache": kv_cache_latency})
             decode_latency += kv_cache_latency
 
         total_decode_latency = decode_latency * num_tokens_to_generate
